@@ -1,0 +1,57 @@
+
+(add-ns grmr (git-dependency "https://github.com/Toccata-Lang/grammar.git"
+                             "grammar.toc"
+                             :sha "7690cd3"))
+(add-ns gg (module "grammar-graph.toc"))
+
+(def grammars [(grmr/term "a")
+               (grmr/all "a")
+               (grmr/optional "a")
+               (grmr/none-or-more "a")
+               (grmr/all "a" "b" "c")
+               (grmr/none-or-more (grmr/all))
+               (grmr/none-or-more (grmr/all "a" "b" "c"))
+               (grmr/all "x" (grmr/none-or-more "a"))
+               (grmr/all (grmr/none-or-more "a") "y")
+               (grmr/all "x" (grmr/none-or-more "a") "y")
+               (grmr/all (grmr/none-or-more "x") (grmr/none-or-more "a"))
+               (grmr/any)
+               (grmr/any "a")
+               (grmr/all (grmr/all "b") "d")
+
+               (grmr/any "a" "b" "c")
+               (grmr/all (grmr/any "a" "b" "c")
+                         (grmr/any "x" "y")
+                         (grmr/any "p" "q" "r"))
+               (grmr/none-or-more (grmr/any "x" "y"))
+               (grmr/all (grmr/any "a" "b" "c")
+                         (grmr/none-or-more (grmr/any "x" "y"))
+                         (grmr/any "p" "q" "r"))
+               (grmr/all "c"
+                         (grmr/one-or-more (grmr/any "x" "y"))
+                         "p")
+               (grmr/all (grmr/any "a" "b" "c")
+                         (grmr/one-or-more (grmr/any "x" "y"))
+                         (grmr/any "p" "q" (grmr/ignore "r")))
+               (grmr/apply-fn list
+                              "a"
+                              "b"
+                              "c")
+               (grmr/apply-fn list
+                              (grmr/apply-fn list
+                                             "a"
+                                             "b"
+                                             "c")
+                              "d")
+
+               (grmr/one-or-more (grmr/all (grmr/all "a" "b")
+                                            "c"))
+               (grmr/none-or-more (grmr/all (grmr/all "a" "b")
+                                            "c"))
+               (grmr/all (grmr/all "a" "b") "c")
+               (grmr/any "\n" "\f" "\t" "\r")])
+
+(main [_]
+      (println "digraph grammar {")
+      (map grammars gg/graph-grammar)
+      (println "}"))

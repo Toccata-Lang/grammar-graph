@@ -1,0 +1,250 @@
+
+(add-ns fr (git-dependency "https://github.com/Toccata-Lang/Free.git"
+                           "free.toc"
+                           :sha "2ab53a3"))
+(add-ns grmr (git-dependency "https://github.com/Toccata-Lang/grammar.git"
+                             "grammar.toc"
+                             :sha "7690cd3"))
+
+(deftype Node [sym]
+  Stringable
+  (string-list [_] (list "<Node " (str "'" sym "'") ">"))) 
+
+(deftype Continuation [f]
+  Stringable
+  (string-list [_] (list "<Continuation " (str f) ">")))
+
+(deftype sub-graph [heads tails]
+  (assert (instance? Vector heads))
+  (assert (instance? Vector tails))
+
+  Stringable
+  (string-list [_]
+    (list "<SubGraph " (str heads) " " (str tails) ">"))
+
+  Composition
+  (comp* [x xs]
+    (sub-graph (comp* (.heads x) (map xs .heads))
+               (comp* (.tails x) (map xs .tails)))))
+
+(extend-type Continuation
+  Function
+  (invoke [c x]
+    (assert (instance? Node x))
+    (assert-result g (instance? sub-graph g))
+    ((.f c) x)))
+
+(deftype Builder [f]
+  Stringable
+  (string-list [_]
+    (list "<Builder " (str f) ">"))
+  
+  Container
+  (apply* [x xs]
+    (f (cons x xs)))
+
+  Function
+  (invoke [c x]
+    (assert (instance? Continuation x))
+    (assert-result g (instance? Continuation g))
+    (f x)))
+
+(defprotocol GraphOps
+  (print-graph [_]
+    ;; (assert-result r (instance? Builder r))
+    ))
+
+(def terminate (Continuation (fn terminate [terminal-node]
+                               (assert (instance? Node terminal-node))
+                               (println (.sym terminal-node) "[peripheries=2];")
+                               (sub-graph [terminal-node] [terminal-node]))))
+
+(defn term-builder [label]
+  (Builder (fn [c]
+             (assert (instance? Continuation c))
+             (Continuation (fn [head]
+                             (assert (instance? Node head))
+                             (let [node (gensym "node_")]
+                               (println node (str "[label = \"'"
+                                                  (escape-chars label)
+                                                  "'\"];"))
+                               (println (.sym head) "->" node ";")
+                               (sub-graph [(Node node)]
+                                          (.tails (c (Node node))))))))))
+
+(def empty-builder (reify
+                     Stringable
+                     (string-list [_] (list "<EmptyBuilder>"))
+                     
+                     Eq
+                     (=* [x y]
+                       (= (get-type x)
+                          (get-type y)))
+
+                     Function
+                     (invoke [_ c] c)))
+
+(extend-type grmr/parser-terminal
+  GraphOps
+  (print-graph [terminal]
+    (either (and (= "" (.term-str terminal))
+                 (maybe empty-builder))
+            (term-builder (escape-chars (.term-str terminal))))))
+
+(extend-type grmr/parser-char-range
+  GraphOps
+  (print-graph [r]
+    (term-builder (str "'" (escape-chars (.lower r)) "' - '" (escape-chars (.higher r)) "'"))))
+
+(extend-type grmr/parser-not-char
+  GraphOps
+  (print-graph [terminal]
+    (term-builder (str "not '" (escape-chars (.test-c terminal)) "'"))))
+
+(extend-type grmr/parser-term-fn
+  GraphOps
+  (print-graph [terminal]
+    (term-builder (str (.f terminal)))))
+
+(extend-type grmr/Cat
+  GraphOps
+  (print-graph [r]
+    (Builder (fn [c]
+               (assert (instance? Continuation c))
+               (Continuation (fn [head]
+                               (let [builder (reduce (reverse (.rules r))
+                                                     (Continuation (fn [tail]
+                                                                     (sub-graph [] [tail])))
+                                                     (fn [c r]
+                                                       (r c)))
+                                     built (builder head)]
+                                 (sub-graph (.heads built)
+                                            (flat-map (map (.tails built) c) .tails)))))))))
+
+(extend-type grmr/none-or-more-rule
+  GraphOps
+  (print-graph [r]
+    (Builder (fn [c]
+               (assert (instance? Continuation c))
+               (Continuation (fn [head]
+                               (let [optional (((.rule r) (Continuation (fn [tail]
+                                                                          (sub-graph [] [tail]))))
+                                               head)
+                                     tail-graph (c head)]
+                                 (for [tail (.heads optional)
+                                       head (.tails optional)]
+                                   (println (.sym head) "->" (.sym tail) ";"))
+                                 (.tails optional (.tails (comp* tail-graph
+                                                                 (-> optional
+                                                                     .tails
+                                                                     seq
+                                                                     (map c))))))))))))
+
+(extend-type grmr/Union
+  GraphOps
+  (print-graph [r]
+    (Builder
+     (fn [c]
+       (assert (instance? Continuation c))
+       (Continuation
+        (fn [head]
+          (assert (instance? Node head))
+          (either (or (for [rule (first (.rules r))
+                            snd (second (.rules r))
+                            :when (= empty-builder snd)]
+                        (comp (c head)
+                              ((rule c) head)))
+                      (for [rule (first (.rules r))]
+                           (comp* ((rule c) head)
+                                  (map (rest (.rules r)) (fn [rule]
+                                                           ((rule c) head))))))
+                  (sub-graph [] []))))))))
+
+(extend-type grmr/repeat-rule
+  GraphOps
+  (print-graph [r]
+    (Builder (fn [c]
+               (assert (instance? Continuation c))
+               (Continuation (fn [head]
+                               (let [x (((.rule r) (Continuation (fn [tail]
+                                                                   (sub-graph [] [tail]))))
+                                        head)]
+                                 (for [head (.heads x)
+                                       tail (.tails x)]
+                                   (println (.sym tail) "->" (.sym head) ";"))
+                                 (comp* (sub-graph [] [])
+                                        (map (seq (.tails x)) c)))))))))
+
+(extend-type grmr/ignore-rule
+  GraphOps
+  (print-graph [r]
+    (.rule r)))
+
+(extend-type Function
+  GraphOps
+  (print-graph [f]
+    (fn [& rules]
+      (either (and (= 1 (count rules))
+                   (first rules))
+              (Builder
+               (fn [c]
+                 (assert (instance? Continuation c))
+                 (Continuation (fn [head]
+                                 (let [builder (reduce (reverse rules)
+                                                       (Continuation (fn [tail]
+                                                                       (sub-graph [] [tail])))
+                                                       (fn [c r]
+                                                         (r c)))
+                                       built (builder head)]
+                                   (sub-graph (.heads built)
+                                              (flat-map (map (.tails built) c) .tails)))))))))))
+
+(extend-type grmr/recursion-rule
+  GraphOps
+  (print-graph [r]
+    (Builder (fn [c]
+               (assert (instance? Continuation c))
+               (Continuation (fn [head]
+                               (assert (instance? Node head))
+                               (let [node (gensym "node_")]
+                                 (println node (str "[label = \""
+                                                    (.rule-name r)
+                                                    "\", style=dashed];"))
+                                 (println (.sym head) "->" node ";")
+                                 (sub-graph [(Node node)]
+                                            (.tails (c (Node node)))))))))))
+
+(extend-type grmr/recursive-parser-rule
+  GraphOps
+  (print-graph [r]
+    (println)
+    (let [start-node (Node (gensym "start_"))
+          rule-graph (((.grammar r) terminate) start-node)]
+      (println (.sym start-node) (str "[label = \"" (.name r) "\"];"))
+      (println)
+      (Builder (fn [c]
+               (assert (instance? Continuation c))
+               (Continuation (fn [head]
+                               (assert (instance? Node head))
+                               (let [node (gensym "node_")]
+                                 (println node (str "[label = \""
+                                                    (.name r)
+                                                    "\", style=dashed];"))
+                                 (println (.sym head) "->" node ";")
+                                 (sub-graph [(Node node)]
+                                            (.tails (c (Node node))))))))))))
+
+(extend-type grmr/parser-rule
+  GraphOps
+  (print-graph [r]
+    (.grammar r)))
+
+(defn graph-grammar [grammar]
+ (let [start (Node (gensym "start_"))]
+   (println (.sym start) "[label = \"start\"];")
+   (((fr/evaluate grammar print-graph) terminate) start)))
+
+(defn produce-graph [grammar]
+  (println "digraph grammar {")
+  (graph-grammar grammar)
+  (println "}"))
